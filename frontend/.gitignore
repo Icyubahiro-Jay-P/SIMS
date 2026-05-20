@@ -1,0 +1,24 @@
+# OS junk
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Env secrets (NEVER commit these)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+bower_components/
+vendor/
+
+# Build outputs
+dist/
+build/
+*.min.js
