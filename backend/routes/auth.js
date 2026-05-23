@@ -1,36 +1,50 @@
-import express from 'express';
-import jwt from 'jsonwebtoken';
+import { Router } from 'express';
 import User from '../models/User.js';
 
-const router = express.Router();
-
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '24h' });
-};
+const router = Router();
 
 router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await User.findOne({ username });
-    if (!user || !(await user.matchPassword(password))) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+    if (!username || !password) {
+      return res.status(400).json({ message: 'Username and password are required' });
     }
-    res.json({ token: generateToken(user._id), username: user.username });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+
+    let user = await User.findOne({ username });
+    if (!user) {
+      user = new User({ username, password });
+      await user.save();
+    } else {
+      const isMatch = await user.comparePassword(password);
+      if (!isMatch) {
+        return res.status(401).json({ message: 'Invalid credentials' });
+      }
+    }
+
+    req.session.userId = user._id;
+    req.session.username = user.username;
+    return res.json({ message: 'Login successful', user: { username: user.username } });
+  } catch (error) {
+    console.error('Login error:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.post('/register', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    const exists = await User.findOne({ username });
-    if (exists) return res.status(400).json({ message: 'User already exists' });
-    const user = await User.create({ username, password });
-    res.status(201).json({ token: generateToken(user._id), username: user.username });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+router.post('/logout', (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      return res.status(500).json({ message: 'Logout failed' });
+    }
+    res.clearCookie('connect.sid');
+    return res.json({ message: 'Logout successful' });
+  });
+});
+
+router.get('/me', (req, res) => {
+  if (req.session && req.session.userId) {
+    return res.json({ user: { username: req.session.username } });
   }
+  return res.status(401).json({ message: 'Not authenticated' });
 });
 
 export default router;

@@ -1,99 +1,129 @@
-import express from 'express';
+import { Router } from 'express';
 import StockOut from '../models/StockOut.js';
 import SparePart from '../models/SparePart.js';
-import auth from '../middleware/auth.js';
+import requireAuth from '../middleware/auth.js';
 
-const router = express.Router();
+const router = Router();
 
-router.get('/', auth, async (req, res) => {
+router.use(requireAuth);
+
+router.get('/', async (req, res) => {
   try {
-    const records = await StockOut.find().populate('sparePart').sort({ createdAt: -1 });
-    res.json(records);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    const stockOuts = await StockOut.find().populate('sparePart').sort({ stockOutDate: -1 });
+    return res.json(stockOuts);
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const record = await StockOut.findById(req.params.id).populate('sparePart');
-    if (!record) return res.status(404).json({ message: 'Not found' });
-    res.json(record);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    const stockOut = await StockOut.findById(req.params.id).populate('sparePart');
+    if (!stockOut) return res.status(404).json({ message: 'Stock out record not found' });
+    return res.json(stockOut);
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.post('/', auth, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { stockOutQuantity, stockOutUnitPrice, stockOutDate, sparePart } = req.body;
-    const stockOutTotalPrice = Number(stockOutQuantity) * Number(stockOutUnitPrice);
+    const { stockOutQuantity, stockOutUnitPrice, stockOutDate, sparePartId } = req.body;
 
-    const record = await StockOut.create({
-      stockOutQuantity, stockOutUnitPrice, stockOutTotalPrice, stockOutDate, sparePart,
+    const sparePart = await SparePart.findById(sparePartId);
+    if (!sparePart) return res.status(404).json({ message: 'Spare part not found' });
+
+    if (sparePart.quantity < stockOutQuantity) {
+      return res.status(400).json({ message: `Insufficient stock. Available: ${sparePart.quantity}` });
+    }
+
+    const stockOutTotalPrice = stockOutQuantity * stockOutUnitPrice;
+
+    const stockOut = new StockOut({
+      stockOutQuantity,
+      stockOutUnitPrice,
+      stockOutTotalPrice,
+      stockOutDate: stockOutDate || new Date(),
+      sparePart: sparePartId,
     });
+    await stockOut.save();
 
-    const part = await SparePart.findById(sparePart);
-    if (part && part.quantity >= Number(stockOutQuantity)) {
-      part.quantity -= Number(stockOutQuantity);
-      part.totalPrice = part.quantity * part.unitPrice;
-      await part.save();
-    }
+    sparePart.quantity -= stockOutQuantity;
+    sparePart.totalPrice = sparePart.quantity * sparePart.unitPrice;
+    await sparePart.save();
 
-    res.status(201).json(record);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
+    const populated = await stockOut.populate('sparePart');
+    return res.status(201).json(populated);
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
-    const oldRecord = await StockOut.findById(req.params.id);
-    if (!oldRecord) return res.status(404).json({ message: 'Not found' });
+    const existing = await StockOut.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Stock out record not found' });
 
-    const { stockOutQuantity, stockOutUnitPrice, stockOutDate, sparePart } = req.body;
-    const stockOutTotalPrice = Number(stockOutQuantity) * Number(stockOutUnitPrice);
+    const { stockOutQuantity, stockOutUnitPrice, stockOutDate, sparePartId } = req.body;
 
-    const part = await SparePart.findById(oldRecord.sparePart);
-    if (part) {
-      part.quantity += Number(oldRecord.stockOutQuantity);
-      if (part.quantity >= Number(stockOutQuantity)) {
-        part.quantity -= Number(stockOutQuantity);
+    const oldQty = existing.stockOutQuantity;
+    const oldSparePartId = existing.sparePart.toString();
+
+    const sparePart = await SparePart.findById(sparePartId || oldSparePartId);
+    if (!sparePart) return res.status(404).json({ message: 'Spare part not found' });
+
+    if (sparePartId && sparePartId !== oldSparePartId) {
+      const oldSparePart = await SparePart.findById(oldSparePartId);
+      if (oldSparePart) {
+        oldSparePart.quantity += oldQty;
+        oldSparePart.totalPrice = oldSparePart.quantity * oldSparePart.unitPrice;
+        await oldSparePart.save();
       }
-      part.totalPrice = part.quantity * part.unitPrice;
-      await part.save();
+      if (sparePart.quantity < stockOutQuantity) {
+        return res.status(400).json({ message: `Insufficient stock. Available: ${sparePart.quantity}` });
+      }
+      sparePart.quantity -= stockOutQuantity;
+    } else {
+      const diff = stockOutQuantity - oldQty;
+      if (diff > 0 && sparePart.quantity < diff) {
+        return res.status(400).json({ message: `Insufficient stock. Available: ${sparePart.quantity}` });
+      }
+      sparePart.quantity -= diff;
     }
 
-    oldRecord.stockOutQuantity = stockOutQuantity;
-    oldRecord.stockOutUnitPrice = stockOutUnitPrice;
-    oldRecord.stockOutTotalPrice = stockOutTotalPrice;
-    oldRecord.stockOutDate = stockOutDate;
-    if (sparePart) oldRecord.sparePart = sparePart;
-    await oldRecord.save();
+    sparePart.totalPrice = sparePart.quantity * sparePart.unitPrice;
+    await sparePart.save();
 
-    const populated = await StockOut.findById(oldRecord._id).populate('sparePart');
-    res.json(populated);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
+    existing.stockOutQuantity = stockOutQuantity ?? existing.stockOutQuantity;
+    existing.stockOutUnitPrice = stockOutUnitPrice ?? existing.stockOutUnitPrice;
+    existing.stockOutTotalPrice = (stockOutQuantity ?? existing.stockOutQuantity) * (stockOutUnitPrice ?? existing.stockOutUnitPrice);
+    existing.stockOutDate = stockOutDate ? new Date(stockOutDate) : existing.stockOutDate;
+    if (sparePartId) existing.sparePart = sparePartId;
+
+    await existing.save();
+    const populated = await existing.populate('sparePart');
+    return res.json(populated);
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
-    const record = await StockOut.findById(req.params.id);
-    if (!record) return res.status(404).json({ message: 'Not found' });
+    const stockOut = await StockOut.findById(req.params.id);
+    if (!stockOut) return res.status(404).json({ message: 'Stock out record not found' });
 
-    const part = await SparePart.findById(record.sparePart);
-    if (part) {
-      part.quantity += Number(record.stockOutQuantity);
-      part.totalPrice = part.quantity * part.unitPrice;
-      await part.save();
+    const sparePart = await SparePart.findById(stockOut.sparePart);
+    if (sparePart) {
+      sparePart.quantity += stockOut.stockOutQuantity;
+      sparePart.totalPrice = sparePart.quantity * sparePart.unitPrice;
+      await sparePart.save();
     }
 
     await StockOut.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Deleted' });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.json({ message: 'Stock out record deleted' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 

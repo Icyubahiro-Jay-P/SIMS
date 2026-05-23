@@ -1,54 +1,63 @@
-import express from 'express';
+import { Router } from 'express';
 import StockOut from '../models/StockOut.js';
 import SparePart from '../models/SparePart.js';
-import auth from '../middleware/auth.js';
+import StockIn from '../models/StockIn.js';
+import requireAuth from '../middleware/auth.js';
 
-const router = express.Router();
+const router = Router();
 
-router.get('/daily-stockout', auth, async (req, res) => {
+router.use(requireAuth);
+
+router.get('/daily-stockout', async (req, res) => {
   try {
     const { date } = req.query;
     const queryDate = date ? new Date(date) : new Date();
-    const start = new Date(queryDate.setHours(0, 0, 0, 0));
-    const end = new Date(queryDate.setHours(23, 59, 59, 999));
 
-    const records = await StockOut.find({
+    const start = new Date(queryDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(queryDate);
+    end.setHours(23, 59, 59, 999);
+
+    const stockOuts = await StockOut.find({
       stockOutDate: { $gte: start, $lte: end },
     }).populate('sparePart').sort({ stockOutDate: -1 });
 
-    res.json(records);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.json(stockOuts);
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.get('/daily-stock-status', auth, async (req, res) => {
+router.get('/daily-stock-status', async (req, res) => {
   try {
+    const spareParts = await SparePart.find().sort({ name: 1 });
+
     const { date } = req.query;
     const queryDate = date ? new Date(date) : new Date();
-    const start = new Date(queryDate.setHours(0, 0, 0, 0));
-    const end = new Date(queryDate.setHours(23, 59, 59, 999));
+    const start = new Date(queryDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(queryDate);
+    end.setHours(23, 59, 59, 999);
 
-    const parts = await SparePart.find().sort({ name: 1 });
+    const result = await Promise.all(spareParts.map(async (sp) => {
+      const stockOutAgg = await StockOut.aggregate([
+        { $match: { sparePart: sp._id, stockOutDate: { $gte: start, $lte: end } } },
+        { $group: { _id: null, totalOut: { $sum: '$stockOutQuantity' } } },
+      ]);
 
-    const stockOuts = await StockOut.aggregate([
-      { $match: { stockOutDate: { $gte: start, $lte: end } } },
-      { $group: { _id: '$sparePart', totalOut: { $sum: '$stockOutQuantity' } } },
-    ]);
+      const stockOutQty = stockOutAgg.length > 0 ? stockOutAgg[0].totalOut : 0;
 
-    const outMap = {};
-    stockOuts.forEach((s) => { outMap[s._id.toString()] = s.totalOut; });
-
-    const report = parts.map((p) => ({
-      name: p.name,
-      storedQty: p.quantity + (outMap[p._id.toString()] || 0),
-      stockOut: outMap[p._id.toString()] || 0,
-      remainingQty: p.quantity,
+      return {
+        sparePartName: sp.name,
+        storedQty: sp.quantity + stockOutQty,
+        stockOutQty,
+        remainingQty: sp.quantity,
+      };
     }));
 
-    res.json(report);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 

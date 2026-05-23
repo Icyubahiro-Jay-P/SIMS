@@ -1,45 +1,35 @@
-import { createContext, useContext, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { createContext, useContext, useState, useEffect } from 'react';
 import api from '../api/axios';
 
-const AuthContext = createContext();
+const AuthContext = createContext(null);
 
-export const useAuth = () => useContext(AuthContext);
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(() => localStorage.getItem('username'));
-  const [token, setToken] = useState(() => localStorage.getItem('token'));
-  const navigate = useNavigate();
+  useEffect(() => {
+    api.get('/auth/me')
+      .then((res) => setUser(res.data.user))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
+  }, []);
 
   const login = async (username, password) => {
-    const { data } = await api.post('/auth/login', { username, password });
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('username', data.username);
-    setToken(data.token);
-    setUser(data.username);
-    navigate('/menu');
+    const res = await api.post('/auth/login', { username, password });
+    setUser(res.data.user);
+    return res.data;
   };
 
-  const register = async (username, password) => {
-    const { data } = await api.post('/auth/register', { username, password });
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('username', data.username);
-    setToken(data.token);
-    setUser(data.username);
-    navigate('/menu');
-  };
-
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('username');
-    setToken(null);
+  const logout = async () => {
+    await api.post('/auth/logout');
     setUser(null);
-    navigate('/login');
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout }}>
+    <AuthContext.Provider value={{ user, login, logout, loading }}>
       {children}
     </AuthContext.Provider>
   );
-};
+}
+
+export const useAuth = () => useContext(AuthContext);
